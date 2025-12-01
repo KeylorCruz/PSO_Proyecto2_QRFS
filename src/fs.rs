@@ -2,6 +2,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::ffi::OsStr;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use fuser::{
@@ -10,6 +11,8 @@ use fuser::{
     ReplyEntry,
     ReplyEmpty,
     ReplyDirectory,
+    ReplyAttr,   
+    FileAttr, 
     FileType,
     MountOption,
 };
@@ -29,6 +32,31 @@ pub struct QrfsInner {
 pub struct QrfsFilesystem {
     inner: Arc<RwLock<QrfsInner>>,
 }
+
+const ROOT_INO: u64 = 1;
+
+fn root_attr() -> FileAttr {
+    let now = SystemTime::now();
+
+    FileAttr {
+        ino: ROOT_INO,
+        size: 0,
+        blocks: 0,
+        atime: now,
+        mtime: now,
+        ctime: now,
+        crtime: now,
+        kind: FileType::Directory,
+        perm: 0o755,   // drwxr-xr-x
+        nlink: 2,
+        uid: 0,        // dueño root (no afecta mucho para probar)
+        gid: 0,
+        rdev: 0,
+        blksize: 512,
+        flags: 0,
+    }
+}
+
 
 impl QrfsFilesystem {
     pub fn mount_from_folder(
@@ -53,7 +81,7 @@ impl QrfsFilesystem {
         let options = vec![
             MountOption::FSName("qrfs".to_string()),
             MountOption::AutoUnmount,
-            MountOption::RW, // o RO si quieren solo lectura
+            MountOption::RW, // read write
         ];
 
         fuser::mount2(self, &mountpoint, &options)?;
@@ -63,9 +91,27 @@ impl QrfsFilesystem {
 }
 
 impl Filesystem for QrfsFilesystem {
-    // otras funciones (getattr, read, write) las pueden implementar en equipo.
 
-    // ---------- TU PARTE: DIRECTORIOS ----------
+    // lookup
+    fn lookup(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        reply: ReplyEntry,
+    ) {
+        println!("lookup llamado: parent = {parent}, name = {:?}", name);
+
+        // Solo soportamos el directorio raíz sin hijos.
+        if parent != ROOT_INO {
+            reply.error(ENOENT);
+            return;
+        }
+
+        // Por ahora, no tenemos archivos ni subdirectorios reales.
+        // Mapear nombres a inodos.
+        reply.error(ENOENT);
+    }
 
     // opendir
     fn opendir(
@@ -83,9 +129,26 @@ impl Filesystem for QrfsFilesystem {
             return;
         }
 
-        // Podrías guardar un handle, pero con fuser no es obligatorio:
         let fh = 0; // file handle dummy
         reply.opened(fh, 0);
+    }
+
+    //getattr
+    fn getattr(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        reply: ReplyAttr,
+    ) {
+        println!("getattr llamado: ino = {ino}");
+
+        if ino == ROOT_INO {
+            let attr = root_attr();
+            let ttl = Duration::from_secs(1);
+            reply.attr(&ttl, &attr);
+        } else {
+            reply.error(ENOENT);
+        }
     }
 
     // readdir
@@ -100,7 +163,7 @@ impl Filesystem for QrfsFilesystem {
         println!("readdir llamado: ino = {ino}, offset = {offset}");
         let inner = self.inner.read().unwrap();
 
-        // 1. Obtener lista de entradas de tu módulo dir.rs
+        // Obtener lista de entradas del módulo dir.rs
         let entries = match dir::list_directory(&inner, ino) {
             Ok(e) => e,
             Err(_) => {
@@ -109,10 +172,10 @@ impl Filesystem for QrfsFilesystem {
             }
         };
 
-        // 2. offset indica desde cuál entrada continuar
+        // offset indica desde cuál entrada continuar
         let mut offset_i = offset as usize;
 
-        // 3. Siempre incluir "." y ".." al inicio (offset 0 y 1)
+        // Siempre incluir "." y ".." al inicio (offset 0 y 1)
         if offset_i == 0 {
             let full = reply.add(ino, 1, FileType::Directory, ".");
             if full {
@@ -131,7 +194,7 @@ impl Filesystem for QrfsFilesystem {
             offset_i = 2;
         }
 
-        // 4. Resto de entradas
+        // Resto de entradas
         for (i, e) in entries.iter().enumerate().skip(offset_i - 2) {
             let next_offset = (i + 3) as i64;
             let full = reply.add(e.ino, next_offset, e.file_type, &e.name);
@@ -169,7 +232,7 @@ impl Filesystem for QrfsFilesystem {
         name: &std::ffi::OsStr,
         reply: ReplyEmpty,
     ) {
-        println!("mkdir llamado: parent = {parent}, name = {:?}", name);
+        println!("rmdir llamado: parent = {parent}, name = {:?}", name);
         let mut inner = self.inner.write().unwrap();
         match dir::remove_directory(&mut inner, parent, name) {
             Ok(()) => reply.ok(),

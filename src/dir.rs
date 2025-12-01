@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 
-use fuser::{FileAttr, FileType};
+use fuser::{FileAttr, FileType, FUSE_ROOT_ID};
 use libc::{ENOTDIR, ENOENT, ENOTEMPTY};
 use thiserror::Error;
 
@@ -18,8 +18,10 @@ pub enum DirError {
     NotEmpty,
     #[error("espacio insuficiente")]
     NoSpace,
-    // etc
+    #[error("operación no soportada")]
+    NotSupported,
 }
+
 
 impl DirError {
     pub fn as_errno(&self) -> i32 {
@@ -28,6 +30,7 @@ impl DirError {
             DirError::NotFound => ENOENT,
             DirError::NotEmpty => ENOTEMPTY,
             DirError::NoSpace => libc::ENOSPC,
+            DirError::NotSupported => libc::ENOSYS,
         }
     }
 }
@@ -40,69 +43,60 @@ pub struct DirEntry {
 
 // --------- Funciones usadas por Filesystem ---------
 
-pub fn is_directory(inner: &QrfsInner, ino: u64) -> bool {
-    // TODO: mirar el inodo con id = ino y revisar su tipo
-    // inner.inodes[ino as usize].is_dir()
-    true
+pub fn is_directory(_inner: &QrfsInner, ino: u64) -> bool {
+    ino == FUSE_ROOT_ID
 }
 
-pub fn list_directory(inner: &QrfsInner, ino: u64) -> Result<Vec<DirEntry>, DirError> {
-    // TODO: devolver las entradas de ese directorio desde tu tabla
-    // Ejemplo ficticio:
-    //
-    // let dir = inner.directories.get(&ino).ok_or(DirError::NotDirectory)?;
-    // Ok(dir.entries.iter().map(|e| ... ).collect())
 
-    Ok(Vec::new())
+pub fn list_directory(_inner: &QrfsInner, ino: u64) -> Result<Vec<DirEntry>, DirError> {
+    if ino != FUSE_ROOT_ID {
+        return Err(DirError::NotDirectory);
+    }
+    Ok(Vec::new()) // raíz vacía
 }
 
-pub fn parent_inode(inner: &QrfsInner, ino: u64) -> Option<u64> {
-    // TODO: tabla de padres o campo en el inodo
-    Some(ino)
+pub fn parent_inode(_inner: &QrfsInner, ino: u64) -> Option<u64> {
+    if ino == FUSE_ROOT_ID {
+        Some(FUSE_ROOT_ID)
+    } else {
+        Some(FUSE_ROOT_ID)
+    }
 }
 
 pub fn create_directory(
     inner: &mut QrfsInner,
     parent: u64,
-    name: &OsStr,
-    mode: u32,
+    _name: &OsStr,
+    _mode: u32,
 ) -> Result<FileAttr, DirError> {
     // Paso 1: validar que parent sea dir
     if !is_directory(inner, parent) {
         return Err(DirError::NotDirectory);
     }
 
-    // Paso 2: revisar que no exista el nombre
-    // Paso 3: reservar nuevo inodo tipo directorio
-    // Paso 4: agregar entrada en el directorio padre
-    // Paso 5: devolver FileAttr del nuevo inodo
-
-    todo!("implementar create_directory");
+    // De momento no soportamos crear directorios en QRFS.
+    Err(DirError::NotSupported)
 }
+
 
 pub fn remove_directory(
-    inner: &mut QrfsInner,
-    parent: u64,
-    name: &OsStr,
+    _inner: &mut QrfsInner,
+    _parent: u64,
+    _name: &OsStr,
 ) -> Result<(), DirError> {
-    // Paso 1: buscar entrada (obtengo ino del directorio a borrar)
-    // Paso 2: verificar que esté vacío
-    // Paso 3: borrar entrada del padre
-    // Paso 4: marcar inodo como libre
-
-    todo!("implementar remove_directory");
+    // De momento no soportamos borrar directorios en QRFS.
+    Err(DirError::NotSupported)
 }
+
 
 pub fn rename_entry(
-    inner: &mut QrfsInner,
-    parent: u64,
-    name: &OsStr,
-    newparent: u64,
-    newname: &OsStr,
+    _inner: &mut QrfsInner,
+    _parent: u64,
+    _name: &OsStr,
+    _newparent: u64,
+    _newname: &OsStr,
 ) -> Result<(), DirError> {
-    // Paso 1: buscar entrada en (parent, name)
-    // Paso 2: remover del padre original
-    // Paso 3: insertar entrada en newparent con newname
-
-    todo!("implementar rename_entry");
+    // De momento no soportamos renombrar/mover entradas en QRFS.
+    Err(DirError::NotSupported)
 }
+

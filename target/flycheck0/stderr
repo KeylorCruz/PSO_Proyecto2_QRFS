@@ -1,0 +1,112 @@
+   0.086188676s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint: stale: changed "/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/dir.rs"
+   0.086200973s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint:           (vs) "/home/miguel/Desktop/PSO_Proyecto2_QRFS/target/debug/.fingerprint/qrfs-65415740f691dbbf/dep-lib-qrfs"
+   0.086204467s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1764555351, nanos: 711237443 } < FileTime { seconds: 1764555918, nanos: 676479480 }
+   0.086248831s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint: fingerprint dirty for qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("qrfs", ["lib"], "/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/lib.rs", Edition2021) }
+   0.086258789s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/home/miguel/Desktop/PSO_Proyecto2_QRFS/target/debug/.fingerprint/qrfs-65415740f691dbbf/dep-lib-qrfs", reference_mtime: FileTime { seconds: 1764555351, nanos: 711237443 }, stale: "/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/dir.rs", stale_mtime: FileTime { seconds: 1764555918, nanos: 676479480 } }))
+   0.087255710s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint: stale: changed "/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/dir.rs"
+   0.087261366s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint:           (vs) "/home/miguel/Desktop/PSO_Proyecto2_QRFS/target/debug/.fingerprint/qrfs-e4948220cb727cd1/dep-test-lib-qrfs"
+   0.087264521s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1764555351, nanos: 711237443 } < FileTime { seconds: 1764555918, nanos: 676479480 }
+   0.087289628s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint: fingerprint dirty for qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("qrfs", ["lib"], "/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/lib.rs", Edition2021) }
+   0.087296974s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="qrfs"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/home/miguel/Desktop/PSO_Proyecto2_QRFS/target/debug/.fingerprint/qrfs-e4948220cb727cd1/dep-test-lib-qrfs", reference_mtime: FileTime { seconds: 1764555351, nanos: 711237443 }, stale: "/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/dir.rs", stale_mtime: FileTime { seconds: 1764555918, nanos: 676479480 } }))
+   0.087506019s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="fsck_qrfs"}: cargo::core::compiler::fingerprint: fingerprint error for qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS)/Check { test: false }/TargetInner { name: "fsck_qrfs", doc: true, ..: with_path("/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/bin/fsck_qrfs.rs", Edition2021) }
+   0.087514983s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="fsck_qrfs"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/miguel/Desktop/PSO_Proyecto2_QRFS/target/debug/.fingerprint/qrfs-408cdb405a887ce9/bin-fsck_qrfs`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/ops/function.rs:287:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panicking.rs:590:40
+  16: std::panicking::catch_unwind
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panicking.rs:553:19
+  17: std::panic::catch_unwind
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panicking.rs:590:40
+  20: std::panicking::catch_unwind
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panicking.rs:553:19
+  21: std::panic::catch_unwind
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+   0.163091907s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="fsck_qrfs"}: cargo::core::compiler::fingerprint: fingerprint dirty for qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS)/Check { test: true }/TargetInner { name: "fsck_qrfs", doc: true, ..: with_path("/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/bin/fsck_qrfs.rs", Edition2021) }
+   0.163106218s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="fsck_qrfs"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { name: "qrfs" })
+   0.163296093s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="mkfs_qrfs"}: cargo::core::compiler::fingerprint: fingerprint error for qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS)/Check { test: false }/TargetInner { name: "mkfs_qrfs", doc: true, ..: with_path("/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/bin/mkfs_qrfs.rs", Edition2021) }
+   0.163304508s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="mkfs_qrfs"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/miguel/Desktop/PSO_Proyecto2_QRFS/target/debug/.fingerprint/qrfs-b574adbccc3519b0/bin-mkfs_qrfs`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/core/src/ops/function.rs:287:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panicking.rs:590:40
+  16: std::panicking::catch_unwind
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panicking.rs:553:19
+  17: std::panic::catch_unwind
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panicking.rs:590:40
+  20: std::panicking::catch_unwind
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panicking.rs:553:19
+  21: std::panic::catch_unwind
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+  25: __libc_start_main_impl
+             at ./csu/../csu/libc-start.c:392:3
+  26: <unknown>
+   0.163573745s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="mkfs_qrfs"}: cargo::core::compiler::fingerprint: fingerprint dirty for qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS)/Check { test: true }/TargetInner { name: "mkfs_qrfs", doc: true, ..: with_path("/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/bin/mkfs_qrfs.rs", Edition2021) }
+   0.163582192s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="mkfs_qrfs"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { name: "qrfs" })
+   0.163769612s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="mount_qrfs"}: cargo::core::compiler::fingerprint: fingerprint dirty for qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS)/Check { test: false }/TargetInner { name: "mount_qrfs", doc: true, ..: with_path("/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/bin/mount_qrfs.rs", Edition2021) }
+   0.163781148s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="mount_qrfs"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { name: "qrfs" })
+   0.164013558s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="mount_qrfs"}: cargo::core::compiler::fingerprint: fingerprint dirty for qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS)/Check { test: true }/TargetInner { name: "mount_qrfs", doc: true, ..: with_path("/home/miguel/Desktop/PSO_Proyecto2_QRFS/src/bin/mount_qrfs.rs", Edition2021) }
+   0.164021841s  INFO prepare_target{force=false package_id=qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS) target="mount_qrfs"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { name: "qrfs" })
+    Checking qrfs v0.1.0 (/home/miguel/Desktop/PSO_Proyecto2_QRFS)
+error: could not compile `qrfs` (bin "fsck_qrfs") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `qrfs` (bin "mkfs_qrfs") due to 1 previous error
