@@ -3,15 +3,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::ffi::OsStr;
 use std::time::{Duration, SystemTime};
+use std::fs;
+use std::fs::File;
+use std::io::Read;
+use std::mem;
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use fuser::{
     Filesystem,
     Request,
     ReplyEntry,
     ReplyEmpty,
     ReplyDirectory,
-    ReplyAttr,   
+    ReplyAttr,
+    ReplyStatfs,   
     FileAttr, 
     FileType,
     MountOption,
@@ -20,8 +25,60 @@ use libc::ENOENT;
 
 use crate::dir; // tu módulo
 
+pub const QRFS_BLOCK_SIZE: u32 = 1024;
+pub const QRFS_MAGIC: u32   = 0x5152_4653; // "QRFS"
+pub const QRFS_VERSION: u32 = 1;
+
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SuperblockDisk {
+    pub magic: u32,
+    pub version: u32,
+
+    pub block_size: u32,
+    pub total_blocks: u32,
+
+    pub inode_table_start: u32,
+    pub inode_table_blocks: u32,
+    pub free_bitmap_start: u32,
+    pub free_bitmap_blocks: u32,
+    pub data_blocks_start: u32,
+
+    pub max_inodes: u32,
+    pub root_inode: u32,
+
+    pub free_blocks: u32,
+    pub free_inodes: u32,
+
+    pub reserved: [u8; 64],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct InodeDisk {
+    pub id: u32,
+    pub file_type: u16,
+    pub perm: u16,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub atime: u64,
+    pub mtime: u64,
+    pub ctime: u64,
+    pub nlink: u32,
+    pub direct_blocks: [u32; 12],
+    pub indirect_block: u32,
+    pub double_indirect_block: u32,
+    pub _padding: u32,
+}
+
 pub struct QrfsInner {
     pub qr_folder: PathBuf,
+    pub superblock: SuperblockDisk,
+    pub free_blocks: u32,
+    pub free_inodes: u32
+    // luego: tabla de inodos en memoria, directorios, etc.
     // acá van superblock, inodos, tablas de directorios, etc.
     // Ejemplos:
     // pub inodes: Vec<Inode>,
@@ -61,15 +118,71 @@ fn root_attr() -> FileAttr {
 impl QrfsFilesystem {
     pub fn mount_from_folder(
         qr_folder: &Path,
-        passphrase: Option<String>,
-        start_qr: Option<PathBuf>,
+        _passphrase: Option<String>,
+        _start_qr: Option<PathBuf>,
     ) -> Result<Self> {
-        // TODO:
-        // - Escanear carpeta de QRs
-        // - Encontrar firma (superblock) usando passphrase si aplica
-        // - Cargar estructuras del FS en memoria (inodos, directorios...)
+        // 1. Listar archivos de la carpeta de QRs
+        let mut entries: Vec<PathBuf> = fs::read_dir(qr_folder)
+            .with_context(|| format!("No se pudo leer el directorio {:?}", qr_folder))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .map(|e| e.path())
+            .collect();
+
+        entries.sort();
+
+        if entries.is_empty() {
+            return Err(anyhow::anyhow!(
+                "La carpeta {:?} no contiene archivos para montar QRFS",
+                qr_folder
+            ));
+        }
+
+        // Por ahora: asumimos que el bloque 0 (superblock) es el primer archivo ordenado.
+        let superblock_path = entries[0].clone();
+
+        // 2. Leer el bloque 0 completo
+        let mut file = File::open(&superblock_path)
+            .with_context(|| format!("No se pudo abrir el archivo {:?}", superblock_path))?;
+
+        let mut buf = vec![0u8; QRFS_BLOCK_SIZE as usize];
+        file.read_exact(&mut buf)
+            .with_context(|| format!("No se pudo leer el bloque 0 desde {:?}", superblock_path))?;
+
+        // 3. Deserializar el SuperblockDisk
+        if buf.len() < mem::size_of::<SuperblockDisk>() {
+            return Err(anyhow::anyhow!(
+                "El bloque 0 es demasiado pequeño para contener un SuperblockDisk"
+            ));
+        }
+
+        let superblock: SuperblockDisk = unsafe {
+            // Interpretamos los primeros bytes como un SuperblockDisk.
+            std::ptr::read(buf.as_ptr() as *const SuperblockDisk)
+        };
+
+        // 4. Validar que esto parece un QRFS
+        if superblock.magic != QRFS_MAGIC {
+            return Err(anyhow::anyhow!(
+                "El superblock no tiene la firma QRFS esperada (magic=0x{:08x})",
+                superblock.magic
+            ));
+        }
+
+        if superblock.version != QRFS_VERSION {
+            return Err(anyhow::anyhow!(
+                "Versión de QRFS no soportada: {} (esperada {})",
+                superblock.version,
+                QRFS_VERSION
+            ));
+        }
+
+        // 5. Construir el estado interno
         let inner = QrfsInner {
             qr_folder: qr_folder.to_path_buf(),
+            free_blocks: superblock.free_blocks,
+            free_inodes: superblock.free_inodes,
+            superblock,
         };
 
         Ok(Self {
@@ -149,6 +262,60 @@ impl Filesystem for QrfsFilesystem {
         } else {
             reply.error(ENOENT);
         }
+    }
+
+    //statfs
+    fn statfs(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        reply: ReplyStatfs,
+    ) {
+        let inner = self.inner.read().unwrap();
+        let sb = &inner.superblock;
+
+        let blocks  = sb.total_blocks as u64;
+        let bfree   = inner.free_blocks as u64;
+        let bavail  = bfree;
+        let files   = sb.max_inodes as u64;
+        let ffree   = inner.free_inodes as u64;
+        let bsize   = sb.block_size;
+        let namelen = 255u32;
+        let frsize  = sb.block_size;
+
+        reply.statfs(blocks, bfree, bavail, files, ffree, bsize, namelen, frsize);
+    }
+
+    //access
+    fn access(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _mask: i32,
+        reply: ReplyEmpty,
+    ) {
+        println!("access llamado: ino = {ino}");
+    
+        // Primerísima versión: solo reconocemos el root.
+        if ino == ROOT_INO {
+            reply.ok();
+        } else {
+            reply.error(ENOENT);
+        }
+    }
+
+    //fsync
+    fn fsync(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        println!("fsync llamado: ino = {ino}");
+        // Más adelante: forzar flush de buffers al QR físico.
+        reply.ok();
     }
 
     // readdir

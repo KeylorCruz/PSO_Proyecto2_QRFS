@@ -8,3 +8,11 @@ fuser = "0.14"      # binding a FUSE en Rust
 libc  = "0.2"
 anyhow = "1"
 thiserror = "1"
+
+[[bin]]
+name = "mount_qrfs"
+path = "src/bin/mount_qrfs.rs"
+
+[[bin]]
+name = "mkfs.qrfs"
+path = "src/bin/mkfs_qrfs.rs"
