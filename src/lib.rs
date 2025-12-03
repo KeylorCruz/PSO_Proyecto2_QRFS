@@ -1,7 +1,6 @@
-// src/lib.rs
 mod fs;
 mod dir;
-pub mod fsck; // para usar fsck::{fsck, fsck_types, fsck_backend, mock} más adelante
+pub mod fsck; // <- descomentar
 
 pub use crate::fs::QrfsFilesystem;
 pub use crate::fs::{

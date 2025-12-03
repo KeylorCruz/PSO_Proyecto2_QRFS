@@ -1,12 +1,15 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::ffi::OsStr;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fs;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::mem;
+use std::collections::HashMap;
+
+use crate::dir; // para usar dir::unpack_dir_entries y dir::DirEntry
+
 
 use anyhow::{Result, Context};
 use fuser::{
@@ -164,6 +167,9 @@ pub struct QrfsInner {
     pub inodes: HashMap<u64, Inode>,
     pub directories: HashMap<u64, Directory>,
     pub next_ino: u64,
+
+    // Contenido de archivos regulares en memoria (ino -> bytes)
+    pub files: HashMap<u64, Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -208,10 +214,10 @@ impl QrfsFilesystem {
     pub fn mount_from_folder(
         qr_folder: &Path,
         _passphrase: Option<String>,
-        _start_qr: Option<PathBuf>,
+        start_qr: Option<PathBuf>,
     ) -> Result<Self> {
         // 1. Listar archivos de la carpeta de QRs
-        let mut entries: Vec<PathBuf> = fs::read_dir(qr_folder)
+                let mut entries: Vec<PathBuf> = fs::read_dir(qr_folder)
             .with_context(|| format!("No se pudo leer el directorio {:?}", qr_folder))?
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
@@ -226,6 +232,25 @@ impl QrfsFilesystem {
                 qr_folder
             ));
         }
+
+        // Si el usuario especificó un archivo de inicio, lo usamos como bloque 0
+        if let Some(start) = start_qr {
+            // Comparamos por nombre de archivo (no por ruta absoluta)
+            if let Some(pos) = entries
+                .iter()
+                .position(|p| p.file_name() == start.file_name())
+            {
+                // Ponemos ese archivo en la posición 0 (bloque lógico 0)
+                entries.swap(0, pos);
+            } else {
+                eprintln!(
+                    "Advertencia: start_qr {:?} no se encontró en {:?}, se usa el primer archivo",
+                    start.file_name(),
+                    qr_folder
+                );
+            }
+        }
+
 
         // 2. Leer el primer archivo como bloque 0 (superblock)
         let first_block = &entries[0];
@@ -268,21 +293,99 @@ impl QrfsFilesystem {
             ));
         }
 
-        // 4. Construir e inicializar el estado interno en memoria
-        let mut inodes = HashMap::new();
-        let mut directories = HashMap::new();
+        // 5. Construir el estado interno leyendo inodos y directorio raíz desde disco
+        let mut inodes: HashMap<u64, Inode> = HashMap::new();
+        let mut directories: HashMap<u64, Directory> = HashMap::new();
+        let mut max_ino_used: u64 = 0;
 
-        // Inodo lógico para el root (ino = 1)
-        let root_ino = ROOT_INO;
-        let root_inode = Inode::dir(root_ino);
-        inodes.insert(root_ino, root_inode);
+        let root_ino = superblock.root_inode as u64;
 
-        // Directorio raíz: parent = él mismo, sin entradas de hijos por ahora.
-        let root_dir = Directory {
-            parent: root_ino,
-            entries: HashMap::new(),
-        };
-        directories.insert(root_ino, root_dir);
+        // 5.1. Cargar todos los inodos válidos desde la tabla de inodos
+        for ino in 1..=superblock.max_inodes as u64 {
+            let disk_inode = match load_inode_disk(&qr_folder, &superblock, ino) {
+                Ok(inode) => inode,
+                Err(e) => {
+                    eprintln!("Advertencia: no se pudo cargar inodo {} desde disco: {e:?}", ino);
+                    continue;
+                }
+            };
+
+            // Inodo no usado: id = 0 o nlink = 0
+            if disk_inode.id == 0 || disk_inode.nlink == 0 {
+                continue;
+            }
+
+            let kind = match disk_inode.file_type {
+                2 => FileType::Directory,
+                _ => FileType::RegularFile,
+            };
+
+            let atime = UNIX_EPOCH + Duration::from_secs(disk_inode.atime);
+            let mtime = UNIX_EPOCH + Duration::from_secs(disk_inode.mtime);
+            let ctime = UNIX_EPOCH + Duration::from_secs(disk_inode.ctime);
+
+            let inode = Inode {
+                ino,
+                kind,
+                perm: disk_inode.perm,
+                uid: disk_inode.uid,
+                gid: disk_inode.gid,
+                size: disk_inode.size,
+                atime,
+                mtime,
+                ctime,
+                nlink: disk_inode.nlink,
+            };
+
+            if ino > max_ino_used {
+                max_ino_used = ino;
+            }
+
+            inodes.insert(ino, inode);
+        }
+
+        // 5.2. Cargar el directorio raíz desde disco
+        let mut root_parent = root_ino;
+        let mut root_entries_map: HashMap<String, u64> = HashMap::new();
+
+        match read_directory_from_disk(&qr_folder, &superblock, root_ino) {
+            Ok(entries) => {
+                for e in entries {
+                    if e.name == "." {
+                        continue;
+                    }
+                    if e.name == ".." {
+                        // Guardamos el parent real del root
+                        root_parent = e.ino;
+                        continue;
+                    }
+                    root_entries_map.insert(e.name.clone(), e.ino);
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Advertencia: no se pudo leer el directorio raíz desde disco: {e:?}. Se inicializa vacío."
+                );
+            }
+        }
+
+        // 5.3. Registrar el directorio raíz en la tabla de directorios
+        directories.insert(
+            root_ino,
+            Directory {
+                parent: root_parent,
+                entries: root_entries_map,
+            },
+        );
+
+        // Si por alguna razón no hay ningún inodo usado, garantizamos al menos el root
+        if max_ino_used == 0 {
+            max_ino_used = root_ino.max(1);
+            if !inodes.contains_key(&root_ino) {
+                let root_inode = Inode::dir(root_ino);
+                inodes.insert(root_ino, root_inode);
+            }
+        }
 
         let inner = QrfsInner {
             qr_folder: qr_folder.to_path_buf(),
@@ -291,12 +394,15 @@ impl QrfsFilesystem {
             free_inodes: superblock.free_inodes,
             inodes,
             directories,
-            next_ino: root_ino + 1,
+            next_ino: max_ino_used + 1,
+            files: HashMap::new(),
         };
+
 
         Ok(Self {
             inner: Arc::new(RwLock::new(inner)),
         })
+
     }
 
     /// Monta el FS con FUSE en el punto de montaje indicado.
@@ -399,6 +505,290 @@ fn load_inode_disk(qr_folder: &Path, superblock: &SuperblockDisk, ino: u64) -> R
 
     Ok(inode)
 }
+
+fn load_bitmap(qr_folder: &Path, superblock: &SuperblockDisk) -> Result<Vec<u8>> {
+    let block_size = QRFS_BLOCK_SIZE as usize;
+    let total_bytes = (superblock.free_bitmap_blocks as usize) * block_size;
+
+    let entries = get_qr_entries(qr_folder)?;
+    let first_block = superblock.free_bitmap_start as usize;
+    let last_block_excl = first_block + superblock.free_bitmap_blocks as usize;
+
+    if last_block_excl > entries.len() {
+        return Err(anyhow::anyhow!(
+            "El bitmap referencia bloques fuera de rango ({}..{} en {} archivos)",
+            first_block,
+            last_block_excl,
+            entries.len()
+        ));
+    }
+
+    let mut buf = Vec::with_capacity(total_bytes);
+    for block_idx in first_block..last_block_excl {
+        let mut file = File::open(&entries[block_idx])
+            .with_context(|| format!("No se pudo abrir el bloque de bitmap {:?}", entries[block_idx]))?;
+        let mut block_buf = vec![0u8; block_size];
+        file.read_exact(&mut block_buf)
+            .with_context(|| format!("No se pudo leer completamente el bloque {:?}", entries[block_idx]))?;
+        buf.extend_from_slice(&block_buf);
+    }
+
+    // Solo nos interesan los bits hasta total_blocks
+    let needed_bytes = ((superblock.total_blocks as usize) + 7) / 8;
+    buf.truncate(needed_bytes);
+    Ok(buf)
+}
+
+fn write_bitmap(qr_folder: &Path, superblock: &SuperblockDisk, bitmap: &[u8]) -> Result<()> {
+    let block_size = QRFS_BLOCK_SIZE as usize;
+    let total_bytes = (superblock.free_bitmap_blocks as usize) * block_size;
+
+    let entries = get_qr_entries(qr_folder)?;
+    let first_block = superblock.free_bitmap_start as usize;
+    let last_block_excl = first_block + superblock.free_bitmap_blocks as usize;
+
+    if last_block_excl > entries.len() {
+        return Err(anyhow::anyhow!(
+            "El bitmap referencia bloques fuera de rango ({}..{} en {} archivos)",
+            first_block,
+            last_block_excl,
+            entries.len()
+        ));
+    }
+
+    // Buffer completo de bloques para escribir
+    let mut buf = vec![0u8; total_bytes];
+    let copy_len = std::cmp::min(bitmap.len(), total_bytes);
+    buf[..copy_len].copy_from_slice(&bitmap[..copy_len]);
+
+    for (i, chunk) in buf.chunks(block_size).enumerate() {
+        let block_idx = first_block + i;
+        let mut file = File::create(&entries[block_idx])
+            .with_context(|| format!("No se pudo abrir el bloque de bitmap {:?} para escritura", entries[block_idx]))?;
+        file.write_all(chunk)
+            .with_context(|| format!("No se pudo escribir completamente el bloque {:?}", entries[block_idx]))?;
+    }
+
+    Ok(())
+}
+
+fn bitmap_test(bitmap: &[u8], block_index: u32) -> bool {
+    let idx = block_index as usize;
+    let byte = idx / 8;
+    let bit = (idx % 8) as u8;
+
+    if byte >= bitmap.len() {
+        return true; // fuera de rango = lo consideramos "ocupado"
+    }
+
+    (bitmap[byte] & (1 << bit)) != 0
+}
+
+fn bitmap_set(bitmap: &mut [u8], block_index: u32, used: bool) {
+    let idx = block_index as usize;
+    let byte = idx / 8;
+    let bit = (idx % 8) as u8;
+
+    if byte >= bitmap.len() {
+        return;
+    }
+
+    if used {
+        bitmap[byte] |= 1 << bit;
+    } else {
+        bitmap[byte] &= !(1 << bit);
+    }
+}
+
+fn write_superblock(qr_folder: &Path, sb: &SuperblockDisk) -> Result<()> {
+    let entries = get_qr_entries(qr_folder)?;
+    if entries.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No hay archivos de bloque para escribir el superblock"
+        ));
+    }
+
+    let block_size = QRFS_BLOCK_SIZE as usize;
+    let mut buf = vec![0u8; block_size];
+    let sb_size = mem::size_of::<SuperblockDisk>();
+
+    if sb_size > buf.len() {
+        return Err(anyhow::anyhow!(
+            "SuperblockDisk ({}) es más grande que el bloque ({})",
+            sb_size,
+            buf.len()
+        ));
+    }
+
+    unsafe {
+        let src = (sb as *const SuperblockDisk) as *const u8;
+        let slice = std::slice::from_raw_parts(src, sb_size);
+        buf[..sb_size].copy_from_slice(slice);
+    }
+
+    let mut file = File::create(&entries[0])
+        .with_context(|| format!("No se pudo abrir el bloque 0 ({:?}) para escritura", entries[0]))?;
+    file.write_all(&buf)
+        .with_context(|| "No se pudo escribir el superblock completo")?;
+
+    Ok(())
+}
+
+fn write_inode_disk(
+    qr_folder: &Path,
+    superblock: &SuperblockDisk,
+    ino: u64,
+    inode: &InodeDisk,
+) -> Result<()> {
+    if ino == 0 || ino > superblock.max_inodes as u64 {
+        return Err(anyhow::anyhow!(
+            "Inodo fuera de rango en write_inode_disk: {} (max_inodes = {})",
+            ino,
+            superblock.max_inodes
+        ));
+    }
+
+    let inode_size = mem::size_of::<InodeDisk>();
+    let block_size = QRFS_BLOCK_SIZE as usize;
+    let total_bytes = (superblock.inode_table_blocks as usize) * block_size;
+
+    let entries = get_qr_entries(qr_folder)?;
+    let first_block = superblock.inode_table_start as usize;
+    let last_block_excl = first_block + superblock.inode_table_blocks as usize;
+
+    if last_block_excl > entries.len() {
+        return Err(anyhow::anyhow!(
+            "La tabla de inodos referencia bloques fuera de rango ({}..{} en {} archivos)",
+            first_block,
+            last_block_excl,
+            entries.len()
+        ));
+    }
+
+    // Leer tabla de inodos completa
+    let mut buf = Vec::with_capacity(total_bytes);
+    for block_idx in first_block..last_block_excl {
+        let mut file = File::open(&entries[block_idx])
+            .with_context(|| format!("No se pudo abrir el bloque de inodos {:?}", entries[block_idx]))?;
+        let mut block_buf = vec![0u8; block_size];
+        file.read_exact(&mut block_buf)
+            .with_context(|| format!("No se pudo leer completamente el bloque {:?}", entries[block_idx]))?;
+        buf.extend_from_slice(&block_buf);
+    }
+
+    let idx_bytes = (ino as usize - 1) * inode_size;
+    if idx_bytes + inode_size > buf.len() {
+        return Err(anyhow::anyhow!(
+            "Inodo {} fuera del rango de la tabla al escribir (idx_bytes = {}, len = {})",
+            ino,
+            idx_bytes,
+            buf.len()
+        ));
+    }
+
+    unsafe {
+        let ptr = inode as *const InodeDisk as *const u8;
+        let slice = std::slice::from_raw_parts(ptr, inode_size);
+        buf[idx_bytes..idx_bytes + inode_size].copy_from_slice(slice);
+    }
+
+    // Escribir tabla de inodos de vuelta
+    for (i, chunk) in buf.chunks(block_size).enumerate() {
+        let block_idx = first_block + i;
+        let mut file = File::create(&entries[block_idx])
+            .with_context(|| format!("No se pudo abrir el bloque de inodos {:?} para escritura", entries[block_idx]))?;
+        file.write_all(chunk)
+            .with_context(|| format!("No se pudo escribir completamente el bloque {:?}", entries[block_idx]))?;
+    }
+
+    Ok(())
+}
+
+fn write_fs_block(qr_folder: &Path, block_index: u32, data: &[u8]) -> Result<()> {
+    let entries = get_qr_entries(qr_folder)?;
+    let idx = block_index as usize;
+
+    if idx >= entries.len() {
+        return Err(anyhow::anyhow!(
+            "Índice de bloque fuera de rango en write_fs_block: {} (hay {} archivos QR)",
+            idx,
+            entries.len()
+        ));
+    }
+
+    let block_size = QRFS_BLOCK_SIZE as usize;
+    let mut buf = vec![0u8; block_size];
+    let len = std::cmp::min(block_size, data.len());
+    buf[..len].copy_from_slice(&data[..len]);
+
+    let mut file = File::create(&entries[idx])
+        .with_context(|| format!("No se pudo abrir el bloque {:?} para escritura", entries[idx]))?;
+    file.write_all(&buf)
+        .with_context(|| format!("No se pudo escribir completamente el bloque {:?}", entries[idx]))?;
+
+    Ok(())
+}
+
+/// Asigna un bloque de datos libre en el bitmap (versión mínima: busca desde data_blocks_start)
+fn alloc_block(inner: &mut QrfsInner) -> Result<u32> {
+    let qr_folder = inner.qr_folder.clone();
+    let sb = &mut inner.superblock;
+
+    let mut bitmap = load_bitmap(&qr_folder, sb)?;
+
+    for b in sb.data_blocks_start..sb.total_blocks {
+        if !bitmap_test(&bitmap, b) {
+            // Encontramos un bloque libre
+            bitmap_set(&mut bitmap, b, true);
+
+            if inner.free_blocks > 0 {
+                inner.free_blocks -= 1;
+            }
+            if sb.free_blocks > 0 {
+                sb.free_blocks -= 1;
+            }
+
+            write_bitmap(&qr_folder, sb, &bitmap)?;
+            write_superblock(&qr_folder, sb)?;
+            return Ok(b);
+        }
+    }
+
+    Err(anyhow::anyhow!("No hay bloques de datos libres disponibles"))
+}
+
+fn read_directory_from_disk(
+    qr_folder: &Path,
+    superblock: &SuperblockDisk,
+    ino: u64,
+) -> Result<Vec<dir::DirEntry>> {
+    // Cargar el inodo del directorio
+    let inode_disk = load_inode_disk(qr_folder, superblock, ino)?;
+
+    if inode_disk.file_type != 2 {
+        return Err(anyhow::anyhow!(
+            "Inodo {} no es un directorio (file_type = {})",
+            ino,
+            inode_disk.file_type
+        ));
+    }
+
+    // Versión mínima: suponemos que el directorio cabe en el primer bloque directo
+    let data_block = inode_disk.direct_blocks[0];
+    if data_block == 0 {
+        // Directorio vacío
+        return Ok(Vec::new());
+    }
+
+    // Leer el bloque de datos correspondiente al directorio
+    let buf = read_fs_block(qr_folder, data_block)?;
+
+    // Usar el helper del módulo dir para desempaquetar las entradas DirEntryDisk
+    let entries = dir::unpack_dir_entries(&buf);
+
+    Ok(entries)
+}
+
 
 
 // -----------------------------------------------------------------------------
@@ -681,33 +1071,113 @@ impl Filesystem for QrfsFilesystem {
 
     // create
     fn create(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
-        name: &OsStr,
-        mode: u32,
-        _umask: u32,
-        flags: i32,
-        reply: ReplyCreate,
-    ) {
-        println!(
-            "create llamado: parent = {parent}, name = {:?}, mode = {mode:#o}, flags = {flags}",
-            name
-        );
+    &mut self,
+    _req: &Request<'_>,
+    parent: u64,
+    name: &OsStr,
+    mode: u32,
+    _umask: u32,
+    flags: i32,
+    reply: ReplyCreate,
+) {
+    println!(
+        "create llamado: parent = {parent}, name = {:?}, mode = {mode:#o}, flags = {flags}",
+        name
+    );
 
-        // Versión mínima:
-        // Por ahora NO creamos estructuras reales en disco/memoria.
-        // Reportamos "operación no implementada" para que el kernel lo sepa.
-        reply.error(libc::ENOSYS);
+    let name_str = name.to_string_lossy().to_string();
 
-        // TODO:
-        // - Reservar un nuevo inodo tipo archivo
-        // - Agregarlo al directorio padre
-        // - Inicializar el mapa de datos del archivo
-        // - Construir un FileAttr y usar reply.created(...)
+    let mut inner = self.inner.write().unwrap();
+
+    // 1) Verificar que el padre existe y es directorio
+    let parent_dir = match inner.directories.get_mut(&parent) {
+        Some(d) => d,
+        None => {
+            reply.error(libc::ENOTDIR);
+            return;
+        }
+    };
+
+    // 2) Verificar que no exista ya una entrada con ese nombre
+    if parent_dir.entries.contains_key(&name_str) {
+        reply.error(libc::EEXIST);
+        return;
     }
 
-        fn read(
+    // 3) Reservar un nuevo inodo lógico
+    let ino = inner.next_ino;
+    inner.next_ino += 1;
+
+    let inode = Inode::file(ino, 0);
+    inner.inodes.insert(ino, inode.clone());
+
+    // 4) Agregar la entrada al directorio padre
+    parent_dir.entries.insert(name_str.clone(), ino);
+
+    // 5) Inicializar el contenido del archivo vacío
+    inner.files.insert(ino, Vec::new());
+
+    // 6-bis) Crear también el inodo en disco (versión mínima)
+    {
+        let qr_folder = inner.qr_folder.clone();
+        let sb = &mut inner.superblock;
+
+        if ino <= sb.max_inodes as u64 {
+            // Actualizar contador de inodos libres
+            if inner.free_inodes > 0 {
+                inner.free_inodes -= 1;
+            }
+            if sb.free_inodes > 0 {
+                sb.free_inodes -= 1;
+            }
+
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u64;
+
+            let disk_inode = InodeDisk {
+                id: ino as u32,
+                file_type: 1, // archivo regular
+                perm: inode.perm,
+                uid: inode.uid,
+                gid: inode.gid,
+                size: 0,
+                atime: now,
+                mtime: now,
+                ctime: now,
+                nlink: 1,
+                direct_blocks: [0u32; 12],
+                indirect_block: 0,
+                double_indirect_block: 0,
+                _padding: 0,
+            };
+
+            if let Err(e) = write_inode_disk(&qr_folder, sb, ino, &disk_inode) {
+                eprintln!("Error al escribir inodo {} en disco: {e:?}", ino);
+            }
+
+            if let Err(e) = write_superblock(&qr_folder, sb) {
+                eprintln!("Error al actualizar superblock tras crear inodo {}: {e:?}", ino);
+            }
+        } else {
+            eprintln!(
+                "Advertencia: ino {} excede max_inodes {}: no se crea inodo en disco",
+                ino, sb.max_inodes
+            );
+        }
+    }
+
+    // 6) Construir atributos FUSE y responder
+    let attr = inode_to_attr(&inode);
+    let ttl = Duration::from_secs(1);
+    let fh = 0; // no llevamos manejo especial de file handles
+
+    reply.created(&ttl, &attr, fh, 0, flags as u32);
+}
+
+
+                fn read(
         &mut self,
         _req: &Request<'_>,
         ino: u64,
@@ -728,17 +1198,37 @@ impl Filesystem for QrfsFilesystem {
             return;
         }
 
-        // Tomamos la info necesaria y soltamos el lock lo antes posible
-        let (qr_folder, superblock) = {
+        // Tomamos lo que necesitamos del estado interno y soltamos el lock
+        let (qr_folder, superblock, maybe_data) = {
             let inner = self.inner.read().unwrap();
-            (inner.qr_folder.clone(), inner.superblock)
+            (
+                inner.qr_folder.clone(),
+                inner.superblock,                   // SuperblockDisk: Copy
+                inner.files.get(&ino).cloned(),    // copia opcional del buffer en RAM
+            )
         };
 
-        // Cargar el inodo desde disco
+        // 1) Si tenemos el archivo en memoria, leemos desde RAM (como antes)
+        if let Some(data) = maybe_data {
+            let offset_usize = offset as usize;
+
+            if offset_usize >= data.len() {
+                // Más allá del EOF
+                reply.data(&[]);
+                return;
+            }
+
+            let end = std::cmp::min(offset_usize + size as usize, data.len());
+            reply.data(&data[offset_usize..end]);
+            return;
+        }
+
+        // 2) Si no está en RAM, leemos desde disco usando InodeDisk + bloques
+        //    (versión mínima: sólo bloques directos)
         let inode_disk = match load_inode_disk(&qr_folder, &superblock, ino) {
             Ok(inode) => inode,
             Err(e) => {
-                eprintln!("Error en read al cargar inodo {ino}: {e:?}");
+                eprintln!("Error en read al cargar inodo {ino} desde disco: {e:?}");
                 reply.error(libc::EIO);
                 return;
             }
@@ -768,14 +1258,19 @@ impl Filesystem for QrfsFilesystem {
         let last_block_idx = ((end - 1) / block_size) as usize;
 
         let mut result = Vec::with_capacity(to_read);
+
         for i in first_block_idx..=last_block_idx {
             if i >= inode_disk.direct_blocks.len() {
                 break;
             }
+
             let b = inode_disk.direct_blocks[i];
             if b == 0 {
                 // Bloque no asignado: lo tratamos como ceros
                 let remaining = to_read - result.len();
+                if remaining == 0 {
+                    break;
+                }
                 let zeros = vec![0u8; remaining.min(block_size as usize)];
                 result.extend_from_slice(&zeros);
                 continue;
@@ -816,31 +1311,139 @@ impl Filesystem for QrfsFilesystem {
         reply.data(&result);
     }
 
-
     // write
     fn write(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        fh: u64,
-        offset: i64,
-        data: &[u8],
-        write_flags: u32,
-        flags: i32,
-        lock_owner: Option<u64>,
-        reply: ReplyWrite,
-    ) {
-        println!(
-            "write llamado: ino = {ino}, fh = {fh}, offset = {offset}, len = {}, write_flags = {write_flags}, flags = {flags}, lock_owner = {:?}",
-            data.len(),
-            lock_owner
-        );
+    &mut self,
+    _req: &Request<'_>,
+    ino: u64,
+    fh: u64,
+    offset: i64,
+    data: &[u8],
+    write_flags: u32,
+    flags: i32,
+    lock_owner: Option<u64>,
+    reply: ReplyWrite,
+) {
+    println!(
+        "write llamado: ino = {ino}, fh = {fh}, offset = {offset}, len = {}, write_flags = {write_flags}, flags = {flags}, lock_owner = {:?}",
+        data.len(),
+        lock_owner
+    );
 
-        let _ = (ino, fh, offset); // por ahora no usamos estos
-
-        // Versión mínima:
-        // Aceptamos los datos "de mentira": decimos que se escribieron,
-        // pero todavía no los guardamos en ningún lado.
-        reply.written(data.len() as u32);
+    if offset < 0 {
+        reply.error(libc::EINVAL);
+        return;
     }
+
+    let mut inner = self.inner.write().unwrap();
+
+    // Archivo debe existir en memoria
+    let buf = match inner.files.get_mut(&ino) {
+        Some(b) => b,
+        None => {
+            reply.error(libc::ENOENT);
+            return;
+        }
+    };
+
+    let offset_usize = offset as usize;
+    let needed_len = offset_usize + data.len();
+
+    if buf.len() < needed_len {
+        buf.resize(needed_len, 0);
+    }
+
+    buf[offset_usize..offset_usize + data.len()].copy_from_slice(data);
+
+    // Actualizar inodo lógico (tamaño y tiempos)
+    if let Some(inode) = inner.inodes.get_mut(&ino) {
+        let new_size = needed_len as u64;
+        if new_size > inode.size {
+            inode.size = new_size;
+        }
+        let now = SystemTime::now();
+        inode.mtime = now;
+        inode.ctime = now;
+    }
+
+        // Persistir versión mínima en disco: un solo bloque directo [0]
+    {
+        let qr_folder = inner.qr_folder.clone();
+        let sb = inner.superblock; // copia
+
+        // Tomamos el contenido completo actual del archivo
+        if let Some(full_data) = inner.files.get(&ino) {
+            let block_size = sb.block_size as usize;
+            let to_write = std::cmp::min(block_size, full_data.len());
+            let data = &full_data[..to_write];
+
+            // Cargar el inodo de disco (puede estar en cero si nunca se inicializó bien)
+            let mut disk_inode = match load_inode_disk(&qr_folder, &sb, ino) {
+                Ok(inode) => inode,
+                Err(e) => {
+                    eprintln!("Error al cargar inodo {} desde disco en write: {e:?}", ino);
+                    // Creamos uno desde cero como fallback
+                    InodeDisk {
+                        id: ino as u32,
+                        file_type: 1,
+                        perm: 0o644,
+                        uid: 0,
+                        gid: 0,
+                        size: 0,
+                        atime: 0,
+                        mtime: 0,
+                        ctime: 0,
+                        nlink: 1,
+                        direct_blocks: [0u32; 12],
+                        indirect_block: 0,
+                        double_indirect_block: 0,
+                        _padding: 0,
+                    }
+                }
+            };
+
+            // Si no tiene bloque de datos asignado en direct_blocks[0], lo asignamos ahora
+            if disk_inode.direct_blocks[0] == 0 {
+                match alloc_block(&mut inner) {
+                    Ok(b) => {
+                        disk_inode.direct_blocks[0] = b;
+                    }
+                    Err(e) => {
+                        eprintln!("Sin bloques libres para archivo {}: {e:?}", ino);
+                        // No podemos persistir, pero el write en memoria ya se hizo
+                        reply.written(data.len() as u32);
+                        return;
+                    }
+                }
+            }
+
+            let data_block = disk_inode.direct_blocks[0];
+
+            if let Err(e) = write_fs_block(&qr_folder, data_block, data) {
+                eprintln!(
+                    "Error al escribir bloque de datos {} para inodo {}: {e:?}",
+                    data_block, ino
+                );
+            } else {
+                // Actualizamos tamaño en disco y tiempos básicos
+                disk_inode.size = to_write as u64;
+
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as u64;
+                disk_inode.mtime = now;
+                disk_inode.ctime = now;
+
+                if let Err(e) = write_inode_disk(&qr_folder, &sb, ino, &disk_inode) {
+                    eprintln!("Error al actualizar inodo {} en disco: {e:?}", ino);
+                }
+            }
+        }
+    }
+
+
+    reply.written(data.len() as u32);
+}
+
 }
