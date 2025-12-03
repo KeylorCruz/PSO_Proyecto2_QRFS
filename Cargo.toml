@@ -9,3 +9,15 @@ libc  = "0.2"
 anyhow = "1"
 thiserror = "1"
 colored = "3.0.0"
+
+[[bin]]
+name = "mount_qrfs"
+path = "src/bin/mount_qrfs.rs"
+
+[[bin]]
+name = "mkfs.qrfs"
+path = "src/bin/mkfs_qrfs.rs"
+
+[[bin]]
+name = "fsck.qrfs"
+path = "src/bin/fsck_qrfs.rs"

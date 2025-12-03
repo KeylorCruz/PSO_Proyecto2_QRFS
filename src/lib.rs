@@ -1,4 +1,15 @@
 // src/lib.rs
 mod fs;
 mod dir;
+pub mod fsck; // para usar fsck::{fsck, fsck_types, fsck_backend, mock} más adelante
+
 pub use crate::fs::QrfsFilesystem;
+pub use crate::fs::{
+    SuperblockDisk,
+    InodeDisk,
+    DirEntryDisk,
+    QRFS_BLOCK_SIZE,
+    QRFS_MAGIC,
+    QRFS_VERSION,
+    QRFS_NAME_LEN,
+};
