@@ -1,7 +1,40 @@
 use colored::*;
 use qrfs::fsck::{mock::MockBackend, fsck_types::*, fsck};
 
+use std::env;
+use std::path::PathBuf;
+
+use qrfs::fsck::{fsck_types::*, fsck, qrfs_backend::QrfsBackend};
+
 fn main() {
+    let mut args = env::args().skip(1);
+    let qrfolder = args.next().expect("Uso: fsck_qrfs qrfolder/");
+
+    let backend = QrfsBackend::new(PathBuf::from(qrfolder));
+
+    let mut rep = FsckReport::new();
+    fsck(&backend, &mut rep);
+
+    println!("{}", "Resultado de fsck.qrfs".bold());
+
+    for err in &rep.errors {
+        println!("{} {}", "✗".red().bold(), err.red());
+    }
+
+    println!("\n{}", "Resumen".bold().underline());
+    if rep.errors.is_empty() {
+        println!("{} Sistema de archivos limpio.\n", "✓ OK".green().bold());
+    } else {
+        println!(
+            "{} {} errores encontrados.\n",
+            "✗ FSCK completado con errores:".red().bold(),
+            rep.errors.len().to_string().yellow()
+        );
+    }
+}
+
+
+fn main2() {
     // ——————————————————————————————————————————
     // BACKEND SIMULADO (con errores para mostrar colores)
     // ——————————————————————————————————————————
