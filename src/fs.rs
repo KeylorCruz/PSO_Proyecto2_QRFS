@@ -14,6 +14,9 @@ use fuser::{
     ReplyDirectory,
     ReplyEmpty,
     ReplyEntry,
+    ReplyCreate,
+    ReplyData,
+    ReplyWrite,
     ReplyOpen,
     Request,
     
@@ -368,5 +371,96 @@ impl Filesystem for QrfsFilesystem {
             Err(e) => reply.error(e.as_errno()),
         }
     }
+
+    // open
+    fn open(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        flags: i32,
+        reply: ReplyOpen,
+    ) {
+        println!("open llamado: ino = {ino}, flags = {flags}");
+
+        // Versión mínima: aceptamos siempre y usamos el propio ino como "file handle"
+        let fh = ino;
+        reply.opened(fh, 0);
+    }
+
+    // create
+    fn create(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        flags: i32,
+        reply: ReplyCreate,
+    ) {
+        println!(
+            "create llamado: parent = {parent}, name = {:?}, mode = {mode:#o}, flags = {flags}",
+            name
+        );
+
+        // Versión mínima:
+        // Por ahora NO creamos estructuras reales en disco/memoria.
+        // Reportamos "operación no implementada" para que el kernel lo sepa.
+        reply.error(libc::ENOSYS);
+
+        // Nota: si luego quieren hacerlo real, aquí es donde:
+        // - Reservarían un nuevo inodo tipo archivo
+        // - Lo agregarían al directorio padre
+        // - Inicializarían el mapa de datos del archivo
+        // - Construirían un FileAttr y usarían reply.created(...)
+    }
+
+    // read
+    fn read(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        size: u32,
+        flags: i32,
+        lock_owner: Option<u64>,
+        reply: ReplyData,
+    ) {
+        println!(
+            "read llamado: ino = {ino}, fh = {fh}, offset = {offset}, size = {size}, flags = {flags}, lock_owner = {:?}",
+            lock_owner
+        );
+
+        // Versión mínima:
+        // Respondemos EOF (cero bytes). No leemos nada real todavía.
+        reply.data(&[]);
+    }
+
+    // write
+    fn write(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        data: &[u8],
+        write_flags: u32,
+        flags: i32,
+        lock_owner: Option<u64>,
+        reply: ReplyWrite,
+    ) {
+        println!(
+            "write llamado: ino = {ino}, fh = {fh}, offset = {offset}, len = {}, write_flags = {write_flags}, flags = {flags}, lock_owner = {:?}",
+            data.len(),
+            lock_owner
+        );
+
+        // Versión mínima:
+        // Aceptamos los datos "de mentira": decimos que se escribieron,
+        // pero todavía no los guardamos en ningún lado.
+        reply.written(data.len() as u32);
+    }
+
 }
 
