@@ -6,7 +6,16 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
-use qrfs::{SuperblockDisk, InodeDisk, QRFS_BLOCK_SIZE, QRFS_MAGIC, QRFS_VERSION};
+use qrfs::{
+    SuperblockDisk,
+    InodeDisk,
+    DirEntryDisk,
+    QRFS_BLOCK_SIZE,
+    QRFS_MAGIC,
+    QRFS_VERSION,
+    QRFS_NAME_LEN,
+};
+
 
 fn main() -> Result<()> {
     // 1. Leer qrfolder/ desde los argumentos
@@ -53,7 +62,10 @@ fn main() -> Result<()> {
     write_superblock(&entries, &superblock)?;
     write_inode_table(&entries, &layout, &inodes)?;
     write_bitmap(&entries, &layout, &bitmap)?;
+    // Primero cero todo el área de datos
     zero_data_blocks(&entries, &layout)?;
+    // Luego escribo el contenido real del directorio raíz en su bloque
+    write_root_directory_block(&entries, &layout)?;
 
     println!(
         "mkfs.qrfs: sistema QRFS creado con {} bloques, {} inodos máximos, {} bloques de datos.",
@@ -143,7 +155,12 @@ fn init_fresh_fs(layout: &FsLayout) -> Result<(SuperblockDisk, Vec<InodeDisk>, V
         .unwrap_or_default()
         .as_secs() as u64;
 
-    let data_blocks = layout.total_blocks - layout.data_blocks_start;
+    // Bloque de datos que vamos a usar para el directorio raíz
+    let root_data_block = layout.data_blocks_start;
+
+    // Total de bloques de datos, y dejamos 1 ocupado por el root
+    let total_data_blocks = layout.total_blocks - layout.data_blocks_start;
+    let data_blocks_after_root = total_data_blocks.saturating_sub(1);
 
     let superblock = SuperblockDisk {
         magic: QRFS_MAGIC,
@@ -157,7 +174,7 @@ fn init_fresh_fs(layout: &FsLayout) -> Result<(SuperblockDisk, Vec<InodeDisk>, V
         data_blocks_start: layout.data_blocks_start,
         max_inodes: layout.max_inodes,
         root_inode: 1,
-        free_blocks: data_blocks,
+        free_blocks: data_blocks_after_root, // << antes usabas todos como libres
         free_inodes: layout.max_inodes.checked_sub(1).unwrap_or(0),
         reserved: [0u8; 64],
     };
@@ -184,24 +201,32 @@ fn init_fresh_fs(layout: &FsLayout) -> Result<(SuperblockDisk, Vec<InodeDisk>, V
     ];
 
     // Inodo 1 = directorio raíz
-    if !inodes.is_empty() {
-        inodes[0] = InodeDisk {
-            id: 1,
-            file_type: 2, // 2 = directorio (convención simple)
-            perm: 0o755,
-            uid: 0,
-            gid: 0,
-            size: 0,
-            atime: now,
-            mtime: now,
-            ctime: now,
-            nlink: 2, // "." y ".."
-            direct_blocks: [0u32; 12],
-            indirect_block: 0,
-            double_indirect_block: 0,
-            _padding: 0,
-        };
-    }
+if !inodes.is_empty() {
+    // tamaño del directorio raíz con "." y ".."
+    let dir_entry_size = std::mem::size_of::<DirEntryDisk>();
+    let root_dir_size = (2 * dir_entry_size) as u64;
+
+    inodes[0] = InodeDisk {
+        id: 1,
+        file_type: 2, // 2 = directorio
+        perm: 0o755,
+        uid: 0,
+        gid: 0,
+        size: root_dir_size, // << antes 0
+        atime: now,
+        mtime: now,
+        ctime: now,
+        nlink: 2, // "." y ".."
+        direct_blocks: {
+            let mut blocks = [0u32; 12];
+            blocks[0] = root_data_block; // << bloque de datos usado por el root
+            blocks
+        },
+        indirect_block: 0,
+        double_indirect_block: 0,
+        _padding: 0,
+    };
+}
 
     // Bitmap: 1 bit por bloque, 1 = usado, 0 = libre.
     let bitmap_bits = layout.total_blocks as usize;
@@ -212,6 +237,13 @@ fn init_fresh_fs(layout: &FsLayout) -> Result<(SuperblockDisk, Vec<InodeDisk>, V
     // [0 .. data_blocks_start)
     for b in 0..layout.data_blocks_start {
         let idx = b as usize;
+        let byte = idx / 8;
+        let bit = (idx % 8) as u8;
+        bitmap[byte] |= 1 << bit;
+    }
+    // Marcar como usado el bloque de datos del directorio raíz
+    {
+        let idx = root_data_block as usize;
         let byte = idx / 8;
         let bit = (idx % 8) as u8;
         bitmap[byte] |= 1 << bit;
@@ -356,4 +388,61 @@ fn write_blocks(
     }
 
     Ok(())
+}
+
+fn make_root_dir_block() -> Vec<u8> {
+    use std::mem;
+
+    let mut entries = Vec::new();
+
+    // "." → inode 1
+    let mut name_dot = [0u8; QRFS_NAME_LEN];
+    name_dot[0] = b'.';
+
+    let dot = DirEntryDisk {
+        inode: 1,
+        name: name_dot,
+    };
+    entries.push(dot);
+
+    // ".." → inode 1 (porque es raíz)
+    let mut name_dotdot = [0u8; QRFS_NAME_LEN];
+    name_dotdot[0] = b'.';
+    name_dotdot[1] = b'.';
+
+    let dotdot = DirEntryDisk {
+        inode: 1,
+        name: name_dotdot,
+    };
+    entries.push(dotdot);
+
+    let entry_size = mem::size_of::<DirEntryDisk>();
+    let mut buf = Vec::with_capacity(entries.len() * entry_size);
+
+    for e in &entries {
+        let ptr = e as *const DirEntryDisk as *const u8;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, entry_size) };
+        buf.extend_from_slice(slice);
+    }
+
+    buf
+}
+
+fn write_root_directory_block(
+    entries: &[PathBuf],
+    layout: &FsLayout,
+) -> Result<()> {
+    let data = make_root_dir_block();
+
+    // El bloque de datos del root es layout.data_blocks_start
+    let root_block_index = layout.data_blocks_start as usize;
+
+    if root_block_index >= entries.len() {
+        return Err(anyhow!(
+            "Índice de bloque de datos raíz fuera de rango: {}",
+            root_block_index
+        ));
+    }
+
+    write_block(&entries[root_block_index], &data)
 }
