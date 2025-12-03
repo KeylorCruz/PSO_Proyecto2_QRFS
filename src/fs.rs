@@ -408,8 +408,8 @@ impl Filesystem for QrfsFilesystem {
         // Reportamos "operación no implementada" para que el kernel lo sepa.
         reply.error(libc::ENOSYS);
 
-        // Nota: si luego quieren hacerlo real, aquí es donde:
-        // - Reservarían un nuevo inodo tipo archivo
+        // TODO: 
+        // - Reservar un nuevo inodo tipo archivo
         // - Lo agregarían al directorio padre
         // - Inicializarían el mapa de datos del archivo
         // - Construirían un FileAttr y usarían reply.created(...)
