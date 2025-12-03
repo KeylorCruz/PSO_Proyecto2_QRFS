@@ -1,0 +1,30 @@
+# Ignorar el directorio de compilación de Rust
+target/
+
+# Archivos generados por cargo
+**/*.rs.bk
+
+# Archivos de salida de pruebas, builds temporales
+*.lock
+
+# Carpetas de diagnósticos de Flycheck
+flycheck*
+target/flycheck*/
+
+# Archivos de rustc info
+target/.rustc_info.json
+
+# Archivos temporales de editores
+*.swp
+*.swo
+*~
+*.tmp
+
+# VS Code settings
+.vscode/
+
+# Archivos de logs
+*.log
+
+# Archivos generados por IDEs/editores
+.idea/
